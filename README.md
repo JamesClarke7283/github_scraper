@@ -23,17 +23,25 @@ thirtyfour = "0.1.0"
 Integrate `GitHub Scraper` into your Rust application with ease. Here's a quick example to illustrate its usage:
 
 ```rust
-use github_scraper::GitHub;
+use github_scraper::search;
 use thirtyfour::prelude::*;
+use futures::stream::StreamExt; // for working with async streams
 
 #[tokio::main]
 async fn main() -> WebDriverResult<()> {
     let driver = WebDriver::new("http://localhost:4444", &DesiredCapabilities::chrome()).await?;
 
-    let github = GitHub::new(driver);
-    // Example: Retrieve data from a specific GitHub repository
-    let repo_data = github.repository("user/repository_name").unwrap();
-    println!("{:?}", repo_data);
+    let repo_search = search::repositories::new("search_query", driver).await?;
+
+    // `repo_search` behaves like a generator, yielding results as needed
+    let mut repo_stream = repo_search.stream();
+
+    while let Some(repo_result) = repo_stream.next().await {
+        match repo_result {
+            Ok(repo) => println!("Repository: {}", repo.name),
+            Err(e) => eprintln!("Error: {}", e),
+        }
+    }
 
     Ok(())
 }
