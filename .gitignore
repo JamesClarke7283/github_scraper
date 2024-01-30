@@ -1,0 +1,8 @@
+target/
+Cargo.lock
+prompt.txt
+
+
+# Added by cargo
+
+/target
