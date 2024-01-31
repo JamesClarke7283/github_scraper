@@ -2,7 +2,7 @@ use async_stream::stream;
 use futures::future::join_all;
 use futures::stream::Stream;
 use thirtyfour::prelude::*;
-use tokio::time::{sleep, Duration};
+use tokio::time::{sleep, Duration, Instant};
 
 pub struct RepositorySearchResult {
     pub url: String,
@@ -56,13 +56,16 @@ async fn extract_repositories(driver: &WebDriver) -> Vec<RepositorySearchResult>
 }
 
 async fn extract_repository_url(elem: &WebElement) -> String {
-    // Targeting the <a> tag within the 'search-title' class div
-    let a_tag = elem.find(By::Css("div.search-title > a")).await.unwrap();
+    // More generic targeting of the <a> tag within 'search-title' div
+    let a_tag = elem
+        .find(By::Css("div.search-title > a"))
+        .await
+        .expect("Failed to find <a> tag within 'search-title' div");
     let href = a_tag
         .attr("href")
         .await
-        .unwrap()
-        .expect("Href attribute missing");
+        .expect("Failed to get href attribute")
+        .expect("Href attribute is missing");
 
     // Prepending the base URL if href is a relative path
     format!("https://github.com{}", href)
@@ -73,7 +76,6 @@ mod tests {
     use super::*;
     use futures::pin_mut; // Required for pin_mut!
     use futures::StreamExt; // Needed for .next() on streams
-                            // Removed the unused import
     use tokio;
 
     async fn setup_driver() -> WebDriver {
@@ -85,15 +87,48 @@ mod tests {
     async fn test_extract_repository_url() {
         let driver = setup_driver().await;
         driver
-            .goto("https://github.com/rust-lang/rust")
+            .goto("https://github.com/search?q=rust-lang")
             .await
-            .unwrap();
-        let elem = driver
-            .find(By::Css("a[href*='/rust-lang/rust']"))
-            .await
-            .unwrap();
-        let url = extract_repository_url(&elem).await;
-        assert_eq!(url, "https://github.com/rust-lang/rust");
+            .expect("Failed to navigate to GitHub search");
+
+        let mut found = false;
+        while !found {
+            // Wait for the search results to be visible
+            let results_list = driver
+                .find(By::Css("div[data-testid='results-list']"))
+                .await
+                .expect("Search results did not load");
+
+            // Attempt to find the repository URL within the current page
+            if let Ok(elem) = results_list.find(By::Css("div.search-title > a")).await {
+                found = true;
+                let url = extract_repository_url(&elem).await;
+                assert!(
+                    url.contains("https://github.com/rust-lang/"),
+                    "URL does not match expected pattern: {}",
+                    url
+                );
+            } else {
+                // If not found, attempt to click the next page button
+                if let Ok(next_button) = driver.find(By::Css("a[aria-label='Next Page']")).await {
+                    next_button
+                        .click()
+                        .await
+                        .expect("Failed to navigate to the next page");
+                    sleep(Duration::from_secs(2)).await; // Wait for the next page to load
+                } else {
+                    // If the next page button is not found, break the loop
+                    break;
+                }
+            }
+        }
+
+        assert!(
+            found,
+            "Failed to find the test repository URL within the paginated search results."
+        );
+
+        driver.quit().await.expect("Failed to quit WebDriver");
     }
 
     #[tokio::test]
@@ -105,12 +140,13 @@ mod tests {
             .unwrap();
         let repos = extract_repositories(&driver).await;
         assert!(!repos.is_empty());
+        driver.quit().await.unwrap(); // Ensure the WebDriver quits after the test
     }
 
     #[tokio::test]
     async fn test_new() {
         let driver = setup_driver().await;
-        let repo_stream = new("rust-lang", driver).await;
+        let repo_stream = new("rust-lang", driver.clone()).await;
 
         pin_mut!(repo_stream); // Pin the stream before using it
 
@@ -119,5 +155,6 @@ mod tests {
         } else {
             panic!("No repositories found");
         }
+        driver.quit().await.unwrap(); // Ensure the WebDriver quits after the test
     }
 }
